@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Camera + Motion (Fix Edition)</title>
+<style>
+ body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:16px;max-width:980px}
+ h1{margin:0 0 8px}
+ .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+ .card{border:1px solid #ddd;border-radius:10px;padding:12px;margin:8px 0}
+ video,canvas{width:100%;background:#000;border-radius:8px}
+ textarea{width:100%;min-height:140px;font-family:ui-monospace,Consolas,monospace}
+ button{padding:8px 12px;border:1px solid #ccc;border-radius:8px;background:#f6f6f6;cursor:pointer}
+ button:disabled{opacity:.6;cursor:not-allowed}
+ .mono{font-family:ui-monospace,Consolas,monospace}
+ .event{border:1px solid #ddd;border-radius:8px;padding:8px;margin-top:8px}
+ .badge{display:inline-block;background:#eee;padding:2px 6px;border-radius:6px}
+ .flash{animation:flash .35s ease-in-out 2}
+ @keyframes flash{50%{box-shadow:0 0 0 4px rgba(255,0,0,.6) inset}}
+ .overlayWrap{position:relative} #overlay{position:absolute;inset:0;pointer-events:none}
+ .warn{color:#9a6700} .err{color:#b30000} .ok{color:#0a7d27}
+</style>
+</head>
+<body>
+<h1>Camera</h1>
+<p class="warn" id="httpsWarn" style="display:none">Open this over <b>HTTPS</b> (GitHub Pages) or <b>localhost</b> or the camera will be blocked.</p>
+<div class="card overlayWrap">
+  <video id="v" autoplay playsinline muted></video>
+  <canvas id="overlay"></canvas>
+</div>
+<div class="row">
+  <button id="start">1) Start camera</button>
+  <button id="offer" disabled>2) Create Offer</button>
+  <button id="apply" disabled>3) Apply Answer</button>
+  <button id="stop" disabled>Stop</button>
+  <span>Status: <span id="st" class="mono">idle</span></span>
+</div>
+
+<div class="card">
+  <div class="row">
+    <button id="mdToggle" disabled>Enable Motion</button>
+    <label>Sensitivity
+      <input id="sens" type="range" min="0.2" max="10" step="0.1" value="1.2">
+      <span id="sensv" class="badge">1.2%</span>
+    </label>
+    <label>Pixel Δ
+      <input id="px" type="range" min="10" max="80" step="1" value="28">
+      <span id="pxv" class="badge">28</span>
+    </label>
+    <label>Interval <input id="int" type="number" min="100" step="50" value="300"> ms</label>
+    <label>Cooldown <input id="cd" type="number" min="0" step="0.5" value="3"> s</label>
+    <label><input id="snap" type="checkbox" checked> Save snapshots</label>
+    <label><input id="beep" type="checkbox" checked> Beep</label>
+    <label><input id="flash" type="checkbox" checked> Flash</label>
+  </div>
+</div>
+
+<div class="card">
+  <button id="copyOffer" disabled>Copy Offer</button>
+  <label>Offer</label>
+  <textarea id="offerOut" placeholder="Click 'Create Offer'"></textarea>
+  <label>Answer (paste from phone)</label>
+  <textarea id="answerIn" placeholder="Paste the Answer JSON"></textarea>
+</div>
+
+<div class="card">
+  <h3>Motion events</h3>
+  <div id="events"></div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const v = document.getElementById('v');
+  const overlay = document.getElementById('overlay');
+  const octx = overlay.getContext('2d');
+  const st = document.getElementById('st');
+  const httpsWarn = document.getElementById('httpsWarn');
+
+  const btnStart = document.getElementById('start');
+  const btnOffer = document.getElementById('offer');
+  const btnApply = document.getElementById('apply');
+  const btnStop = document.getElementById('stop');
+  const btnCopyOffer = document.getElementById('copyOffer');
+
+  const mdToggle = document.getElementById('mdToggle');
+  const sens = document.getElementById('sens');
+  const px = document.getElementById('px');
+  const sensv = document.getElementById('sensv');
+  const pxv = document.getElementById('pxv');
+  const iInt = document.getElementById('int');
+  const iCd = document.getElementById('cd');
+  const saveSnaps = document.getElementById('snap');
+  const doBeep = document.getElementById('beep');
+  const doFlash = document.getElementById('flash');
+
+  const offerOut = document.getElementById('offerOut');
+  const answerIn = document.getElementById('answerIn');
+  const eventsEl = document.getElementById('events');
+
+  let pc=null, stream=null;
+  let mdOn=false, timer=null, lastFrame=null, lastTrig=0;
+  const proc = document.createElement('canvas');
+  const pctx = proc.getContext('2d',{willReadFrequently:true});
+
+  if(location.protocol!=='https:' && location.hostname!=='localhost'){
+    httpsWarn.style.display = 'block';
+  }
+
+  function setStatus(s,c){ st.textContent=s; st.className='mono'+(c?(' '+c):''); }
+  function pad(n){ return String(n).padStart(2,'0'); }
+  function tNow(){ const d=new Date(); return pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds()); }
+  function setOverlay(){ overlay.width=v.clientWidth||640; overlay.height=v.clientHeight||360; }
+  window.addEventListener('resize', setOverlay);
+
+  function drawText(t){
+    octx.clearRect(0,0,overlay.width,overlay.height);
+    octx.font='16px system-ui,Arial';
+    octx.fillStyle='rgba(255,255,255,.95)';
+    octx.strokeStyle='rgba(0,0,0,.6)'; octx.lineWidth=3;
+    octx.strokeText(t,10,24); octx.fillText(t,10,24);
+  }
+
+  function beep(){
+    try{
+      const a=new (window.AudioContext||window.webkitAudioContext)();
+      const o=a.createOscillator(), g=a.createGain();
+      o.connect(g); g.connect(a.destination);
+      o.type='square'; o.frequency.value=880; g.gain.value=0.07;
+      o.start(); o.stop(a.currentTime+0.15);
+    }catch{}
+  }
+
+  function triggerMotion(pct){
+    const now=Date.now(), cd=Math.max(0, Number(iCd.value||0)*1000);
+    if(now-lastTrig<cd) return; lastTrig=now;
+    const ts=tNow(), ps=pct.toFixed(2)+'%';
+    if(doFlash.checked){ overlay.classList.remove('flash'); void overlay.offsetWidth; overlay.classList.add('flash'); }
+    if(doBeep.checked) beep();
+    drawText('MOTION '+ps+' @ '+ts);
+    if(saveSnaps.checked && v.videoWidth && v.videoHeight){
+      const c=document.createElement('canvas'); c.width=v.videoWidth; c.height=v.videoHeight;
+      c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+      const url=c.toDataURL('image/jpeg',0.85);
+      const div=document.createElement('div'); div.className='event';
+      div.innerHTML='<div><span class="badge">MOTION</span> '+ts+' — '+ps+'</div>';
+      const img=document.createElement('img'); img.src=url; img.style.width='100%'; img.style.borderRadius='8px'; img.style.border='1px solid #ddd';
+      const a=document.createElement('a'); a.href=url; a.download='motion_'+ts.replace(/[:]/g,'-')+'.jpg'; a.textContent='Download snapshot';
+      a.style.display='inline-block'; a.style.marginTop='6px';
+      div.appendChild(img); div.appendChild(a); eventsEl.prepend(div);
+    } else {
+      const div=document.createElement('div'); div.className='event'; div.textContent=ts+' — Motion '+ps; eventsEl.prepend(div);
+    }
+  }
+
+  function startMDLoop(){
+    if(!v.videoWidth || !v.videoHeight) return;
+    const maxW=320, ratio=v.videoWidth/v.videoHeight;
+    const w=Math.min(maxW, v.videoWidth), h=Math.round(w/ratio);
+    proc.width=w; proc.height=h;
+    if(timer) clearInterval(timer);
+    timer=setInterval(()=>{
+      try{
+        pctx.drawImage(v,0,0,w,h);
+        const curr=pctx.getImageData(0,0,w,h);
+        if(!lastFrame || lastFrame.width!==w || lastFrame.height!==h){ lastFrame=pctx.getImageData(0,0,w,h); return; }
+        const data=curr.data, prev=lastFrame.data; let changed=0; const total=w*h;
+        const thr=Number(px.value||28);
+        for(let i=0;i<data.length;i+=4){
+          const y = data[i]*0.299 + data[i+1]*0.587 + data[i+2]*0.114;
+          const py= prev[i]*0.299 + prev[i+1]*0.587 + prev[i+2]*0.114;
+          if(Math.abs(y-py)>=thr) changed++;
+        }
+        lastFrame.data.set(data);
+        const percent=(changed/total)*100;
+        const need=Number(sens.value||1.2);
+        drawText(mdOn?('MD: '+percent.toFixed(2)+'% (thr '+need+'%)'):'MD: off');
+        if(mdOn && percent>=need) triggerMotion(percent);
+      }catch(e){ console.warn('md error', e); }
+    }, Math.max(100, Number(iInt.value||300)));
+  }
+
+  function iceServers(){ return [{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}]; }
+  async function waitIce(pc){ if(pc.iceGatheringState==='complete') return; await new Promise(res=>{const f=()=>{if(pc.iceGatheringState==='complete'){pc.removeEventListener('icegatheringstatechange',f);res();}}; pc.addEventListener('icegatheringstatechange',f);}); }
+
+  mdToggle.addEventListener('click',()=>{ mdOn=!mdOn; mdToggle.textContent=mdOn?'Disable Motion':'Enable Motion'; });
+  sens.addEventListener('input',()=> sensv.textContent=sens.value+'%');
+  px.addEventListener('input',()=> pxv.textContent=px.value);
+
+  btnStart.onclick = async () => {
+    try{
+      setStatus('requesting camera...');
+      if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+        setStatus('getUserMedia not available — use HTTPS or a modern browser','err'); return;
+      }
+      stream = await navigator.mediaDevices.getUserMedia({video:true,audio:false});
+      v.srcObject = stream;
+      setStatus('camera ready','ok'); btnOffer.disabled=false; btnStop.disabled=false; mdToggle.disabled=false;
+      setOverlay(); if(v.readyState>=2) startMDLoop(); else v.onloadedmetadata=()=>{ setOverlay(); startMDLoop(); };
+    }catch(e){ setStatus('camera error: '+e.message,'err'); }
+  };
+
+  btnOffer.onclick = async () => {
+    try{
+      if(!stream) return alert('Start the camera first.');
+      pc = new RTCPeerConnection({iceServers: iceServers()});
+      stream.getTracks().forEach(t=>pc.addTrack(t,stream));
+      setStatus('creating offer...');
+      const offer = await pc.createOffer({offerToReceiveVideo:false});
+      await pc.setLocalDescription(offer);
+      setStatus('gathering ICE...'); await waitIce(pc);
+      offerOut.value = JSON.stringify(pc.localDescription);
+      btnCopyOffer.disabled=false; btnApply.disabled=false; setStatus('offer ready — copy to phone','ok');
+    }catch(e){ setStatus('offer error: '+e.message,'err'); }
+  };
+
+  btnCopyOffer.onclick = async () => {
+    try{ await navigator.clipboard.writeText(offerOut.value); setStatus('offer copied','ok'); }
+    catch{ setStatus('copy failed — select and copy','warn'); }
+  };
+
+  btnApply.onclick = async () => {
+    try{
+      if(!pc) return alert('Create the Offer first.');
+      const text = answerIn.value.trim(); if(!text) return alert('Paste the Answer from the phone first.');
+      await pc.setRemoteDescription(JSON.parse(text));
+      setStatus('answer applied — connecting...','ok');
+    }catch(e){ setStatus('apply error: '+e.message,'err'); }
+  };
+
+  btnStop.onclick = () => {
+    try{
+      if(timer){ clearInterval(timer); timer=null; }
+      lastFrame=null;
+      if(pc){ pc.getSenders().forEach(s=>{ try{s.track&&s.track.stop(); }catch{} }); pc.close(); pc=null; }
+      if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+      offerOut.value=''; answerIn.value='';
+      btnOffer.disabled=true; btnApply.disabled=true; btnCopyOffer.disabled=true; btnStop.disabled=true; mdToggle.disabled=true;
+      drawText(''); setStatus('stopped');
+    }catch(e){ setStatus('stop error: '+e.message,'err'); }
+  };
+});
+</script>
+</body>
+</html>
