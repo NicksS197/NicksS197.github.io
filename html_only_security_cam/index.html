@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HTML-Only Security Cam</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; max-width: 900px; }
+    h1 { margin-bottom: 0.25rem; }
+    .card { border: 1px solid #eee; padding: 12px; border-radius: 10px; }
+    a.button { display: inline-block; padding: 10px 14px; border-radius: 8px; border: 1px solid #ccc; background: #f6f6f6; text-decoration: none; color: black; margin-right: 8px; }
+    code { background: #f4f4f4; padding: 2px 6px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <h1>HTML-Only Security Cam</h1>
+  <p>This is a static WebRTC pair that works with manual copy/paste signaling (no server needed).</p>
+  <p>
+    1) Open <a class="button" href="./camera.html">camera.html</a> on the computer with the webcam.<br/>
+    2) Click <b>Start camera</b>, then <b>Create Offer</b>. Copy the Offer text.<br/>
+    3) On your phone, open <a class="button" href="./viewer.html">viewer.html</a> (HTTPS), paste the Offer, click <b>Create Answer</b>.<br/>
+    4) Copy the Answer back into the camera page and click <b>Apply Answer</b>.
+  </p>
+  <div class="card">
+    <h3>Hosting</h3>
+    <p>For camera access, open over <b>HTTPS</b> or <b>localhost</b>. An easy option is GitHub Pages or any static host. Just upload these files and visit the URLs.</p>
+    <p><b>Note:</b> On strict networks, you might need a TURN server to connect through firewalls/NATs. This demo uses public STUN only.</p>
+  </div>
+</body>
+</html>
